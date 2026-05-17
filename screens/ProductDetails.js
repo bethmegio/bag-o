@@ -49,24 +49,15 @@ export default function ProductDetails({ navigation, route }) {
     "https://images.unsplash.com/photo-1576013551627-0cc20b96c2a7?w=800",
   ];
 
-  useEffect(() => {
-    checkUser();
-    loadRelatedProducts();
-    loadReviews();
-    loadStock();
-    Animated.timing(fadeAnim, {
-      toValue: 1,
-      duration: 800,
-      useNativeDriver: true,
-    }).start();
-  }, [product.id]);
-
+  // ========== FIXED: checkUser FUNCTION ==========
   const checkUser = async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      setUser(user);
+      const { data: { user: currentUser } } = await supabase.auth.getUser();
+      setUser(currentUser);
+      return currentUser;
     } catch (error) {
       console.error("Error checking user:", error);
+      return null;
     }
   };
 
@@ -116,7 +107,6 @@ export default function ProductDetails({ navigation, route }) {
         return;
       }
       
-      // Group conversations by review_id
       const conversationsMap = {};
       convData?.forEach(conv => {
         if (!conversationsMap[conv.review_id]) {
@@ -132,100 +122,64 @@ export default function ProductDetails({ navigation, route }) {
   };
 
   const loadReviews = async () => {
-  try {
-    setIsLoadingReviews(true);
-    
-    const { data: reviewsData, error: reviewsError } = await supabase
-      .from("reviews")
-      .select("*")
-      .eq("product_id", product.id)
-      .neq("status", "deleted")  // ← ADD THIS LINE - Filter out deleted reviews
-      .order("created_at", { ascending: false });
-
-    if (reviewsError) {
-      console.error("Error loading reviews:", reviewsError);
-      await createSampleReviews();
-      return;
-    }
-
-    if (reviewsData && reviewsData.length > 0) {
-      const transformedReviews = reviewsData.map(review => {
-        const userName = review.user_name || 
-                        (review.user_email ? review.user_email.split('@')[0] : "Anonymous");
-        
-        return {
-          id: review.id,
-          product_id: review.product_id,
-          user_id: review.user_id,
-          rating: review.rating,
-          comment: review.comment,
-          user_name: userName,
-          created_at: review.created_at,
-          updated_at: review.updated_at,
-          helpful_count: review.helpful_count || 0,
-          is_verified_purchase: review.is_verified_purchase || false,
-          is_local: false
-        };
-      });
+    try {
+      setIsLoadingReviews(true);
       
-      setReviews(transformedReviews);
-      await fetchRepliesForReviews(transformedReviews);
-      await fetchConversationsForReviews(transformedReviews);
-    } else {
-      await createSampleReviews();
-    }
-    
-  } catch (error) {
-    console.error("Error in loadReviews:", error);
-    await createSampleReviews();
-  } finally {
-    setIsLoadingReviews(false);
-  }
-};
+      const { data: reviewsData, error: reviewsError } = await supabase
+        .from("reviews")
+        .select("*")
+        .eq("product_id", product.id)
+        .neq("status", "deleted")
+        .order("created_at", { ascending: false });
 
-  const createSampleReviews = async () => {
-    const sampleReviews = [
-      {
-        id: 1,
-        product_id: product.id,
-        rating: 5,
-        comment: "Excellent quality! The pump works perfectly with my pool. Very quiet and energy efficient. Highly recommend!",
-        user_name: "Maria Santos",
-        created_at: new Date(Date.now() - 86400000 * 2).toISOString(),
-        helpful_count: 3,
-        is_verified_purchase: true
-      },
-      {
-        id: 2,
-        product_id: product.id,
-        rating: 4,
-        comment: "Good value for money. Installation was straightforward. Minor issue with instructions but overall satisfied.",
-        user_name: "Juan Dela Cruz",
-        created_at: new Date(Date.now() - 86400000 * 5).toISOString(),
-        helpful_count: 2,
-        is_verified_purchase: true
-      },
-      {
-        id: 3,
-        product_id: product.id,
-        rating: 5,
-        comment: "Perfect for our backyard pool. Customer service was excellent when I had questions about installation.",
-        user_name: "Robert Lim",
-        created_at: new Date(Date.now() - 86400000 * 10).toISOString(),
-        helpful_count: 5,
-        is_verified_purchase: true
+      if (reviewsError) {
+        console.error("Error loading reviews:", reviewsError);
+        setReviews([]);
+        return;
       }
-    ];
 
-    setReviews(sampleReviews);
-    setReplies({});
-    setConversations({});
+      if (reviewsData && reviewsData.length > 0) {
+        const transformedReviews = reviewsData.map(review => {
+          const userName = review.user_name || 
+                          (review.user_email ? review.user_email.split('@')[0] : "Anonymous");
+          
+          return {
+            id: review.id,
+            product_id: review.product_id,
+            user_id: review.user_id,
+            rating: review.rating,
+            comment: review.comment,
+            user_name: userName,
+            created_at: review.created_at,
+            updated_at: review.updated_at,
+            helpful_count: review.helpful_count || 0,
+            is_verified_purchase: review.is_verified_purchase || false,
+            is_local: false
+          };
+        });
+        
+        setReviews(transformedReviews);
+        await fetchRepliesForReviews(transformedReviews);
+        await fetchConversationsForReviews(transformedReviews);
+      } else {
+        setReviews([]);
+      }
+      
+    } catch (error) {
+      console.error("Error in loadReviews:", error);
+      setReviews([]);
+    } finally {
+      setIsLoadingReviews(false);
+    }
   };
 
   // Submit user reply to admin
   const submitUserReply = async () => {
     if (!user) {
-      Alert.alert("Login Required", "Please login to reply");
+      Alert.alert("Login Required", "Please login to reply", [
+        { text: "Login", onPress: () => navigation.navigate("Login") },
+        { text: "Cancel", style: "cancel" },
+      ]);
       return;
     }
 
@@ -258,7 +212,6 @@ export default function ProductDetails({ navigation, route }) {
 
       if (error) throw error;
 
-      // Update local state
       const updatedConversations = { ...conversations };
       if (!updatedConversations[selectedConversation.reviewId]) {
         updatedConversations[selectedConversation.reviewId] = [];
@@ -280,7 +233,10 @@ export default function ProductDetails({ navigation, route }) {
 
   const submitReview = async () => {
     if (!user) {
-      Alert.alert("Login Required", "Please login to leave a review");
+      Alert.alert("Login Required", "Please login to leave a review", [
+        { text: "Login", onPress: () => navigation.navigate("Login") },
+        { text: "Cancel", style: "cancel" },
+      ]);
       return;
     }
 
@@ -340,7 +296,8 @@ export default function ProductDetails({ navigation, route }) {
             comment: newReview.comment.trim(),
             user_name: userName,
             helpful_count: 0,
-            is_verified_purchase: false
+            is_verified_purchase: false,
+            status: "pending"
           })
           .select()
           .single();
@@ -362,7 +319,7 @@ export default function ProductDetails({ navigation, route }) {
             is_verified_purchase: false
           };
           setReviews([reviewObj, ...reviews]);
-          Alert.alert("Success", "Thank you for your review!");
+          Alert.alert("Success", "Thank you for your review! It will appear after admin approval.");
           resetForm();
         }
       }
@@ -464,8 +421,8 @@ export default function ProductDetails({ navigation, route }) {
     try {
       setAddingToCart(true);
       
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
+      const currentUser = await checkUser();
+      if (!currentUser) {
         Alert.alert('Login Required', 'Please login to add items to cart', [
           {
             text: 'Login',
@@ -495,7 +452,7 @@ export default function ProductDetails({ navigation, route }) {
       const { data: existingItem } = await supabase
         .from('cart_items')
         .select('*')
-        .eq('user_id', user.id)
+        .eq('user_id', currentUser.id)
         .eq('product_id', product.id)
         .single();
 
@@ -511,7 +468,7 @@ export default function ProductDetails({ navigation, route }) {
         const { error } = await supabase
           .from('cart_items')
           .insert({
-            user_id: user.id,
+            user_id: currentUser.id,
             product_id: product.id,
             quantity: quantity,
           });
@@ -585,7 +542,7 @@ export default function ProductDetails({ navigation, route }) {
   };
 
   // Render conversation thread
-  const renderConversationThread = (reviewId, reviewComment, adminReply) => {
+  const renderConversationThread = (reviewId, adminReply) => {
     const convs = conversations[reviewId] || [];
     const isExpanded = expandedConversations[reviewId];
     
@@ -619,7 +576,6 @@ export default function ProductDetails({ navigation, route }) {
                 </View>
                 <Text style={styles.messageText}>{adminReply.reply_text}</Text>
                 
-                {/* Reply button for admin message */}
                 <TouchableOpacity 
                   style={styles.replyToMessageButton}
                   onPress={() => {
@@ -638,7 +594,7 @@ export default function ProductDetails({ navigation, route }) {
             )}
             
             {/* User and Admin conversation messages */}
-            {convs.map((msg, index) => (
+            {convs.map((msg) => (
               <View 
                 key={msg.id} 
                 style={[
@@ -662,7 +618,6 @@ export default function ProductDetails({ navigation, route }) {
                 </View>
                 <Text style={styles.messageText}>{msg.message}</Text>
                 
-                {/* Reply button for user to reply again */}
                 {!msg.is_admin && (
                   <TouchableOpacity 
                     style={styles.replyToMessageButton}
@@ -722,7 +677,7 @@ export default function ProductDetails({ navigation, route }) {
         <Text style={styles.reviewComment}>{review.comment}</Text>
         
         {/* Conversation Thread (Admin Reply + User Replies) */}
-        {hasConversation && renderConversationThread(review.id, review.comment, adminReply)}
+        {hasConversation && renderConversationThread(review.id, adminReply)}
         
         {/* Reply button for original review */}
         <View style={styles.reviewActions}>
@@ -850,6 +805,77 @@ export default function ProductDetails({ navigation, route }) {
 
   const stats = getReviewStats();
 
+  useEffect(() => {
+    checkUser();
+    loadRelatedProducts();
+    loadReviews();
+    loadStock();
+
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 800,
+      useNativeDriver: true,
+    }).start();
+
+    // ========== REAL-TIME SUBSCRIPTIONS ==========
+    
+    const reviewsSubscription = supabase
+      .channel('reviews-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'reviews',
+          filter: `product_id=eq.${product.id}`,
+        },
+        (payload) => {
+          console.log('🔄 Review changed:', payload);
+          loadReviews();
+        }
+      )
+      .subscribe();
+
+    const repliesSubscription = supabase
+      .channel('replies-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'review_replies',
+        },
+        (payload) => {
+          console.log('🔄 Reply changed:', payload);
+          loadReviews();
+        }
+      )
+      .subscribe();
+
+    const conversationsSubscription = supabase
+      .channel('conversations-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'review_conversations',
+        },
+        (payload) => {
+          console.log('🔄 Conversation changed:', payload);
+          loadReviews();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(reviewsSubscription);
+      supabase.removeChannel(repliesSubscription);
+      supabase.removeChannel(conversationsSubscription);
+    };
+  }, [product.id]);
+
+  // ========== RENDER ==========
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -914,7 +940,7 @@ export default function ProductDetails({ navigation, route }) {
             <Text style={styles.productPrice}>
               ₱ {Number(product.price || 0).toLocaleString()}
             </Text>
-            <Text style={[styles.stockText, { color: stock > 0 ? "green" : "red" }]}>
+            <Text style={[styles.stockText, { color: stock > 0 ? "#4CAF50" : "#FF6B6B" }]}>
               {stock > 0 ? `✓ ${stock} in stock` : "✗ Out of stock"}
             </Text>
           </View>
@@ -1126,7 +1152,7 @@ export default function ProductDetails({ navigation, route }) {
                     </Text>
                     <Text style={[
                       styles.relatedProductStock, 
-                      { color: (item.stock || 0) > 0 ? "green" : "red" }
+                      { color: (item.stock || 0) > 0 ? "#4CAF50" : "#FF6B6B" }
                     ]}>
                       {(item.stock || 0) > 0 ? "In Stock" : "Out of Stock"}
                     </Text>
@@ -1593,7 +1619,6 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     marginBottom: 12,
   },
-  // Conversation Styles
   conversationThread: {
     marginTop: 12,
     marginBottom: 8,
@@ -1790,7 +1815,6 @@ const styles = StyleSheet.create({
     marginTop: 20,
     lineHeight: 20,
   },
-  // Modal Styles
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0, 0, 0, 0.5)",

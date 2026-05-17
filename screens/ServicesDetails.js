@@ -1,10 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Image,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -19,6 +21,7 @@ export default function ServicesDetails({ navigation, route }) {
   const { service } = route.params || {};
   const [reviews, setReviews] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [user, setUser] = useState(null);
   const [showReviewForm, setShowReviewForm] = useState(false);
   const [newReview, setNewReview] = useState({ rating: 5, comment: '' });
@@ -26,9 +29,17 @@ export default function ServicesDetails({ navigation, route }) {
   const [averageRating, setAverageRating] = useState(0);
   const [totalReviews, setTotalReviews] = useState(0);
   const [relatedProducts, setRelatedProducts] = useState([]);
-  const [loadingRelated, setLoadingRelated] = useState(false); 
+  const [loadingRelated, setLoadingRelated] = useState(false);
+  const [replies, setReplies] = useState({});
   
-  // Service images for fallback
+  // ========== ADD CONVERSATIONS STATE ==========
+  const [conversations, setConversations] = useState({});
+  const [showReplyModal, setShowReplyModal] = useState(false);
+  const [selectedConversation, setSelectedConversation] = useState(null);
+  const [replyMessage, setReplyMessage] = useState("");
+  const [isSendingReply, setIsSendingReply] = useState(false);
+  const [expandedConversations, setExpandedConversations] = useState({});
+  
   const serviceImages = {
     'Pool Cleaning': 'https://images.unsplash.com/photo-1575429198097-0414ec08e8cd?w=800&q=80',
     'Maintenance': 'https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=800&q=80',
@@ -52,6 +63,120 @@ export default function ServicesDetails({ navigation, route }) {
     }
   };
 
+  const fetchRepliesForReviews = async (reviewsData) => {
+    if (!reviewsData || reviewsData.length === 0) return;
+    
+    try {
+      const reviewIds = reviewsData.map(review => review.id);
+      const { data: replyData, error } = await supabase
+        .from("service_review_replies")
+        .select("*")
+        .in("review_id", reviewIds);
+      
+      if (error) {
+        console.error("Error fetching replies:", error);
+        return;
+      }
+      
+      const repliesMap = {};
+      replyData?.forEach(reply => {
+        repliesMap[reply.review_id] = reply;
+      });
+      setReplies(repliesMap);
+    } catch (error) {
+      console.error("Error in fetchRepliesForReviews:", error);
+    }
+  };
+
+  // ========== ADD FUNCTION TO FETCH CONVERSATIONS ==========
+  const fetchConversationsForReviews = async (reviewsData) => {
+    if (!reviewsData || reviewsData.length === 0) return;
+    
+    try {
+      const reviewIds = reviewsData.map(review => review.id);
+      const { data: convData, error } = await supabase
+        .from("service_review_conversations")
+        .select("*")
+        .in("review_id", reviewIds)
+        .order("created_at", { ascending: true });
+      
+      if (error && error.code !== '42P01') {
+        console.error("Error fetching conversations:", error);
+        return;
+      }
+      
+      const conversationsMap = {};
+      convData?.forEach(conv => {
+        if (!conversationsMap[conv.review_id]) {
+          conversationsMap[conv.review_id] = [];
+        }
+        conversationsMap[conv.review_id].push(conv);
+      });
+      
+      setConversations(conversationsMap);
+    } catch (error) {
+      console.error("Error in fetchConversationsForReviews:", error);
+    }
+  };
+
+  // ========== ADD FUNCTION TO SUBMIT USER REPLY ==========
+  const submitUserReply = async () => {
+    if (!user) {
+      Alert.alert("Login Required", "Please login to reply", [
+        { text: "Login", onPress: () => navigation.navigate("Login") },
+        { text: "Cancel", style: "cancel" },
+      ]);
+      return;
+    }
+
+    if (!replyMessage.trim()) {
+      Alert.alert("Empty Message", "Please enter a reply message");
+      return;
+    }
+
+    try {
+      setIsSendingReply(true);
+      
+      const userName = user.user_metadata?.full_name || 
+                      user.email?.split("@")[0] || 
+                      "Customer";
+
+      const newConversation = {
+        review_id: selectedConversation.reviewId,
+        parent_id: selectedConversation.parentId || null,
+        user_id: user.id,
+        user_name: userName,
+        message: replyMessage.trim(),
+        is_admin: false,
+        created_at: new Date().toISOString()
+      };
+
+      const { data, error } = await supabase
+        .from("service_review_conversations")
+        .insert([newConversation])
+        .select();
+
+      if (error) throw error;
+
+      const updatedConversations = { ...conversations };
+      if (!updatedConversations[selectedConversation.reviewId]) {
+        updatedConversations[selectedConversation.reviewId] = [];
+      }
+      updatedConversations[selectedConversation.reviewId].push(data[0]);
+      setConversations(updatedConversations);
+
+      Alert.alert("Success", "Your reply has been sent!");
+      setReplyMessage("");
+      setShowReplyModal(false);
+      
+    } catch (error) {
+      console.error("Error submitting reply:", error);
+      Alert.alert("Error", "Failed to send reply. Please try again.");
+    } finally {
+      setIsSendingReply(false);
+    }
+  };
+
   const loadReviews = async () => {
     try {
       setLoading(true);
@@ -60,13 +185,13 @@ export default function ServicesDetails({ navigation, route }) {
         .from('service_reviews')
         .select('*')
         .eq('service_id', service.id)
+        .neq('status', 'deleted')
         .order('created_at', { ascending: false });
 
       if (error) {
         console.log('Error loading service reviews:', error);
-        const sampleReviews = createSampleReviews();
-        setReviews(sampleReviews);
-        calculateRating(sampleReviews);
+        setReviews([]);
+        calculateRating([]);
       } else if (data && data.length > 0) {
         const formattedReviews = data.map(review => ({
           ...review,
@@ -76,16 +201,16 @@ export default function ServicesDetails({ navigation, route }) {
         
         setReviews(formattedReviews);
         calculateRating(formattedReviews);
+        await fetchRepliesForReviews(formattedReviews);
+        await fetchConversationsForReviews(formattedReviews);
       } else {
-        const sampleReviews = createSampleReviews();
-        setReviews(sampleReviews);
-        calculateRating(sampleReviews);
+        setReviews([]);
+        calculateRating([]);
       }
     } catch (error) {
       console.error('Error loading service reviews:', error);
-      const sampleReviews = createSampleReviews();
-      setReviews(sampleReviews);
-      calculateRating(sampleReviews);
+      setReviews([]);
+      calculateRating([]);
     } finally {
       setLoading(false);
     }
@@ -119,42 +244,17 @@ export default function ServicesDetails({ navigation, route }) {
     }
   };
 
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadReviews();
+    setRefreshing(false);
+  };
+
   const getDisplayName = (review) => {
     if (review.user_id) {
       return 'Verified Customer';
     }
     return 'Anonymous';
-  };
-
-  const createSampleReviews = () => {
-    return [
-      {
-        id: 1,
-        service_id: service.id,
-        rating: 5,
-        comment: "Excellent service! Very professional team.",
-        user_name: "Maria Santos",
-        user_display_name: "Maria Santos",
-        helpful_count: 0,
-        is_verified_service: true,
-        is_verified_purchase: true,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      },
-      {
-        id: 2,
-        service_id: service.id,
-        rating: 4,
-        comment: "Good quality work, would recommend.",
-        user_name: "Juan Dela Cruz",
-        user_display_name: "Juan Dela Cruz",
-        helpful_count: 0,
-        is_verified_service: true,
-        is_verified_purchase: true,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      },
-    ];
   };
 
   const calculateRating = (reviewsData) => {
@@ -171,9 +271,6 @@ export default function ServicesDetails({ navigation, route }) {
   };
 
   const submitReview = async () => {
-    console.log("📝 Submitting review for SERVICE:", service.id);
-    console.log("👤 User:", user?.id);
-
     if (!user) {
       Alert.alert("Login Required", "Please login to leave a review");
       return;
@@ -191,7 +288,7 @@ export default function ServicesDetails({ navigation, route }) {
                       user.email?.split("@")[0] || 
                       "Anonymous";
 
-      const { data: existingReview, error: checkError } = await supabase
+      const { data: existingReview } = await supabase
         .from("service_reviews")
         .select("*")
         .eq("service_id", service.id)
@@ -213,7 +310,7 @@ export default function ServicesDetails({ navigation, route }) {
 
         if (updateError) {
           console.error("Update error:", updateError);
-          await saveReviewLocally(userName, true);
+          Alert.alert("Error", "Failed to update review. Please try again.");
         } else {
           const reviewObj = {
             ...updatedReview,
@@ -237,20 +334,15 @@ export default function ServicesDetails({ navigation, route }) {
             comment: newReview.comment.trim(),
             user_name: userName,
             helpful_count: 0,
-            is_verified_service: false
+            is_verified_service: false,
+            status: 'pending'
           })
           .select()
           .single();
 
         if (insertError) {
           console.error("Insert error:", insertError);
-          
-          if (insertError.code === '23505') {
-            console.log("Unique violation, trying update...");
-            await handleExistingServiceReview(userName);
-          } else {
-            await saveReviewLocally(userName, false);
-          }
+          Alert.alert("Error", "Failed to submit review. Please try again.");
         } else {
           const reviewObj = {
             ...newReviewData,
@@ -259,7 +351,7 @@ export default function ServicesDetails({ navigation, route }) {
             is_verified_purchase: newReviewData.is_verified_service || false
           };
           setReviews([reviewObj, ...reviews]);
-          Alert.alert("Success", "Thank you for your review!");
+          Alert.alert("Success", "Thank you for your review! It will appear after admin approval.");
           resetForm();
         }
       }
@@ -272,84 +364,12 @@ export default function ServicesDetails({ navigation, route }) {
     }
   };
 
-  const handleExistingServiceReview = async (userName) => {
-    try {
-      const { data: existing } = await supabase
-        .from("service_reviews")
-        .select("*")
-        .eq("service_id", service.id)
-        .eq("user_id", user.id)
-        .single();
-        
-      if (existing) {
-        const { data: updated } = await supabase
-          .from("service_reviews")
-          .update({
-            rating: newReview.rating,
-            comment: newReview.comment.trim(),
-            user_name: userName,
-            updated_at: new Date().toISOString()
-          })
-          .eq("id", existing.id)
-          .select()
-          .single();
-          
-        if (updated) {
-          const reviewObj = {
-            ...updated,
-            user_display_name: userName,
-            user_name: userName,
-            is_verified_purchase: updated.is_verified_service || false
-          };
-          setReviews(reviews.map(r => 
-            r.id === existing.id ? reviewObj : r
-          ));
-          Alert.alert("Success", "Review updated!");
-          resetForm();
-        }
-      }
-    } catch (updateError) {
-      console.error("Update failed:", updateError);
-      await saveReviewLocally(userName, true);
-    }
-  };
-
-  const saveReviewLocally = async (userName, isUpdate = false) => {
-    const localReview = {
-      id: `local_${Date.now()}`,
-      service_id: service.id,
-      rating: newReview.rating,
-      comment: newReview.comment.trim(),
-      user_display_name: userName,
-      user_name: userName,
-      user_id: user.id,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      helpful_count: 0,
-      is_verified_service: false,
-      is_verified_purchase: false,
-      is_local: true
-    };
-    
-    if (isUpdate) {
-      const filteredReviews = reviews.filter(review => 
-        !review.is_local || !(review.service_id === service.id && review.user_id === user.id)
-      );
-      setReviews([localReview, ...filteredReviews]);
-    } else {
-      setReviews([localReview, ...reviews]);
-    }
-    
-    Alert.alert(
-      "Note", 
-      "Review saved locally. It will appear immediately but may need to sync with the server later."
-    );
-    resetForm();
-  };
-
   const resetForm = () => {
     setNewReview({ rating: 5, comment: "" });
     setShowReviewForm(false);
+    setTimeout(() => {
+      loadReviews();
+    }, 500);
   };
 
   const handleBookNow = async () => {
@@ -369,7 +389,7 @@ export default function ServicesDetails({ navigation, route }) {
   };
 
   const getUserDisplayName = (review) => {
-    return review.user_display_name || 'Anonymous User';
+    return review.user_display_name || review.user_name || 'Anonymous User';
   };
 
   const getServiceImage = () => {
@@ -378,6 +398,138 @@ export default function ServicesDetails({ navigation, route }) {
     const category = service.category || 'default';
     const imageUrl = serviceImages[category] || serviceImages['default'];
     return { uri: imageUrl };
+  };
+
+  const toggleConversation = (reviewId) => {
+    setExpandedConversations(prev => ({
+      ...prev,
+      [reviewId]: !prev[reviewId]
+    }));
+  };
+
+  // ========== ADD CONVERSATION THREAD RENDERER ==========
+  const renderConversationThread = (reviewId, adminReply) => {
+    const convs = conversations[reviewId] || [];
+    const isExpanded = expandedConversations[reviewId];
+    
+    if (convs.length === 0 && !adminReply) return null;
+    
+    return (
+      <View style={styles.conversationThread}>
+        <TouchableOpacity 
+          style={styles.conversationHeader}
+          onPress={() => toggleConversation(reviewId)}
+        >
+          <Ionicons 
+            name={isExpanded ? "chevron-down" : "chevron-forward"} 
+            size={16} 
+            color="#00BFFF" 
+          />
+          <Text style={styles.conversationHeaderText}>
+            {convs.length + (adminReply ? 1 : 0)} {convs.length + (adminReply ? 1 : 0) === 1 ? 'reply' : 'replies'}
+          </Text>
+        </TouchableOpacity>
+        
+        {isExpanded && (
+          <View style={styles.conversationMessages}>
+            {/* Admin Reply */}
+            {adminReply && (
+              <View style={[styles.messageBubble, styles.adminMessage]}>
+                <View style={styles.messageHeader}>
+                  <Ionicons name="shield-checkmark" size={12} color="#00BFFF" />
+                  <Text style={styles.adminNameText}>Admin</Text>
+                  <Text style={styles.messageDate}>{formatDate(adminReply.created_at)}</Text>
+                </View>
+                <Text style={styles.messageText}>{adminReply.reply_text}</Text>
+                
+                <TouchableOpacity 
+                  style={styles.replyToMessageButton}
+                  onPress={() => {
+                    if (!user) {
+                      Alert.alert("Login Required", "Please login to reply", [
+                        { text: "Login", onPress: () => navigation.navigate("Login") },
+                        { text: "Cancel", style: "cancel" },
+                      ]);
+                      return;
+                    }
+                    setSelectedConversation({
+                      reviewId: reviewId,
+                      parentId: null,
+                      replyingTo: "Admin"
+                    });
+                    setShowReplyModal(true);
+                  }}
+                >
+                  <Ionicons name="chatbubble-outline" size={12} color="#00BFFF" />
+                  <Text style={styles.replyToMessageText}>Reply</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+            
+            {/* User and Admin conversation messages */}
+            {convs.map((msg) => (
+              <View 
+                key={msg.id} 
+                style={[
+                  styles.messageBubble,
+                  msg.is_admin ? styles.adminMessage : styles.userMessage
+                ]}
+              >
+                <View style={styles.messageHeader}>
+                  <Ionicons 
+                    name={msg.is_admin ? "shield-checkmark" : "person-circle"} 
+                    size={12} 
+                    color={msg.is_admin ? "#00BFFF" : "#4CAF50"} 
+                  />
+                  <Text style={[
+                    styles.messageUserName,
+                    msg.is_admin && styles.adminNameText
+                  ]}>
+                    {msg.is_admin ? "Admin" : msg.user_name}
+                  </Text>
+                  <Text style={styles.messageDate}>{formatDate(msg.created_at)}</Text>
+                </View>
+                <Text style={styles.messageText}>{msg.message}</Text>
+                
+                {!msg.is_admin && (
+                  <TouchableOpacity 
+                    style={styles.replyToMessageButton}
+                    onPress={() => {
+                      if (!user) {
+                        Alert.alert("Login Required", "Please login to reply", [
+                          { text: "Login", onPress: () => navigation.navigate("Login") },
+                          { text: "Cancel", style: "cancel" },
+                        ]);
+                        return;
+                      }
+                      setSelectedConversation({
+                        reviewId: reviewId,
+                        parentId: msg.id,
+                        replyingTo: msg.user_name
+                      });
+                      setShowReplyModal(true);
+                    }}
+                  >
+                    <Ionicons name="chatbubble-outline" size={12} color="#00BFFF" />
+                    <Text style={styles.replyToMessageText}>Reply</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            ))}
+          </View>
+        )}
+      </View>
+    );
+  };
+
+  // ========== UPDATED ADMIN REPLY RENDERER WITH THREAD ==========
+  const renderAdminReply = (review) => {
+    const reply = replies[review.id];
+    const hasConversation = reply || (conversations[review.id] && conversations[review.id].length > 0);
+    
+    if (!hasConversation) return null;
+    
+    return renderConversationThread(review.id, reply);
   };
 
   const renderStarRating = (rating, interactive = false, onRatingChange = null) => (
@@ -420,39 +572,75 @@ export default function ServicesDetails({ navigation, route }) {
     }
   };
 
+  // ========== MAIN USEEFFECT ==========
   useEffect(() => {
-  checkUser();
-  loadRelatedProducts();
-  loadReviews();
-  loadStock();
-  Animated.timing(fadeAnim, {
-    toValue: 1,
-    duration: 800,
-    useNativeDriver: true,
-  }).start();
+    loadUser();
+    loadRelatedProducts();
+    loadReviews();
 
-  // Real-time subscription for reviews
-  const reviewsSubscription = supabase
-    .channel('reviews-changes')
-    .on(
-      'postgres_changes',
-      {
-        event: 'DELETE',  // Listen for deletions
-        schema: 'public',
-        table: 'reviews',
-        filter: `product_id=eq.${product.id}`,
-      },
-      (payload) => {
-        console.log('Review deleted:', payload);
-        loadReviews(); // Refresh the list
-      }
-    )
-    .subscribe();
+    // Real-time subscription for service reviews
+    const serviceReviewsSubscription = supabase
+      .channel('service-reviews-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'service_reviews',
+          filter: `service_id=eq.${service.id}`,
+        },
+        (payload) => {
+          console.log('🔄 Service review changed:', payload);
+          loadReviews();
+        }
+      )
+      .subscribe();
 
-  return () => {
-    supabase.removeChannel(reviewsSubscription);
-  };
-}, [product.id]);
+    // Real-time subscription for replies
+    const repliesSubscription = supabase
+      .channel('service-replies-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'service_review_replies',
+        },
+        () => {
+          loadReviews();
+        }
+      )
+      .subscribe();
+
+    // Real-time subscription for conversations
+    const conversationsSubscription = supabase
+      .channel('service-conversations-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'service_review_conversations',
+        },
+        () => {
+          loadReviews();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(serviceReviewsSubscription);
+      supabase.removeChannel(repliesSubscription);
+      supabase.removeChannel(conversationsSubscription);
+    };
+  }, [service.id]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadReviews();
+      return () => {};
+    }, [service.id])
+  );
 
   // ========== RENDER LOGIC ==========
   if (!service) {
@@ -474,7 +662,12 @@ export default function ServicesDetails({ navigation, route }) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView showsVerticalScrollIndicator={false}>
+      <ScrollView 
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={["#00BFFF"]} />
+        }
+      >
         {/* Header Image Section */}
         <View style={styles.headerContainer}>
           <Image 
@@ -655,6 +848,32 @@ export default function ServicesDetails({ navigation, route }) {
                 
                 <Text style={styles.reviewComment}>{review.comment}</Text>
                 
+                {/* Admin Reply with Conversation Thread */}
+                {renderAdminReply(review)}
+                
+                {/* Add Reply Button for Original Review */}
+                <TouchableOpacity 
+                  style={styles.replyToReviewButton}
+                  onPress={() => {
+                    if (!user) {
+                      Alert.alert("Login Required", "Please login to reply", [
+                        { text: "Login", onPress: () => navigation.navigate("Login") },
+                        { text: "Cancel", style: "cancel" },
+                      ]);
+                      return;
+                    }
+                    setSelectedConversation({
+                      reviewId: review.id,
+                      parentId: null,
+                      replyingTo: getUserDisplayName(review)
+                    });
+                    setShowReplyModal(true);
+                  }}
+                >
+                  <Ionicons name="chatbubble-outline" size={14} color="#00BFFF" />
+                  <Text style={styles.replyToReviewText}>Reply to Review</Text>
+                </TouchableOpacity>
+                
                 {review.is_verified_purchase && (
                   <View style={styles.verifiedBadge}>
                     <Ionicons name="checkmark-circle" size={12} color="#10B981" />
@@ -682,6 +901,65 @@ export default function ServicesDetails({ navigation, route }) {
           </Text>
         </View>
       </ScrollView>
+
+      {/* Reply Modal */}
+      <Modal
+        visible={showReplyModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowReplyModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                Reply to {selectedConversation?.replyingTo || "Review"}
+              </Text>
+              <TouchableOpacity onPress={() => setShowReplyModal(false)}>
+                <Ionicons name="close" size={24} color="#333" />
+              </TouchableOpacity>
+            </View>
+            
+            <TextInput
+              style={styles.modalInput}
+              placeholder="Write your reply..."
+              placeholderTextColor="#999"
+              value={replyMessage}
+              onChangeText={setReplyMessage}
+              multiline
+              numberOfLines={5}
+              textAlignVertical="top"
+            />
+            
+            <View style={styles.modalButtons}>
+              <TouchableOpacity 
+                style={styles.modalCancelButton}
+                onPress={() => {
+                  setShowReplyModal(false);
+                  setReplyMessage("");
+                }}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={[styles.modalSendButton, (!replyMessage.trim() || isSendingReply) && styles.modalSendDisabled]}
+                onPress={submitUserReply}
+                disabled={!replyMessage.trim() || isSendingReply}
+              >
+                {isSendingReply ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="send" size={18} color="#fff" />
+                    <Text style={styles.modalSendText}>Send Reply</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1008,6 +1286,128 @@ const styles = StyleSheet.create({
     color: '#475569',
     marginBottom: 12,
   },
+  conversationThread: {
+    marginTop: 12,
+    marginBottom: 8,
+    backgroundColor: "#F8F9FA",
+    borderRadius: 10,
+    overflow: "hidden",
+  },
+  conversationHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 10,
+    backgroundColor: "#F0F0F0",
+  },
+  conversationHeaderText: {
+    fontSize: 12,
+    color: "#00BFFF",
+    fontWeight: "600",
+    marginLeft: 6,
+  },
+  conversationMessages: {
+    padding: 12,
+  },
+  messageBubble: {
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 10,
+  },
+  adminMessage: {
+    backgroundColor: "#E3F2FD",
+    borderLeftWidth: 3,
+    borderLeftColor: "#00BFFF",
+  },
+  userMessage: {
+    backgroundColor: "#E8F5E9",
+    borderLeftWidth: 3,
+    borderLeftColor: "#4CAF50",
+    marginLeft: 20,
+  },
+  messageHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 6,
+  },
+  messageUserName: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#333",
+    marginLeft: 6,
+    flex: 1,
+  },
+  adminNameText: {
+    color: "#00BFFF",
+  },
+  messageDate: {
+    fontSize: 10,
+    color: "#999",
+  },
+  messageText: {
+    fontSize: 13,
+    color: "#333",
+    lineHeight: 18,
+  },
+  replyToMessageButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-end",
+    marginTop: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  replyToMessageText: {
+    fontSize: 11,
+    color: "#00BFFF",
+    marginLeft: 4,
+  },
+  replyToReviewButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: "#F0F9FF",
+    alignSelf: "flex-start",
+    marginBottom: 12,
+  },
+  replyToReviewText: {
+    fontSize: 12,
+    color: "#00BFFF",
+    marginLeft: 6,
+    fontWeight: "500",
+  },
+  adminReplyContainer: {
+    backgroundColor: '#F0F9FF',
+    borderRadius: 10,
+    padding: 12,
+    marginTop: 8,
+    marginBottom: 12,
+    borderLeftWidth: 3,
+    borderLeftColor: '#00BFFF',
+  },
+  adminReplyHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  adminReplyLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#00BFFF',
+    marginLeft: 6,
+  },
+  adminReplyText: {
+    fontSize: 13,
+    color: '#333',
+    lineHeight: 18,
+    marginBottom: 6,
+  },
+  adminReplyDate: {
+    fontSize: 10,
+    color: '#999',
+    fontStyle: 'italic',
+  },
   verifiedBadge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1066,5 +1466,73 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     marginLeft: 12,
     lineHeight: 20,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  modalContent: {
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: 20,
+    width: "90%",
+    maxHeight: "80%",
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#333",
+  },
+  modalInput: {
+    borderWidth: 1,
+    borderColor: "#e0e0e0",
+    borderRadius: 12,
+    padding: 12,
+    fontSize: 14,
+    color: "#333",
+    minHeight: 100,
+    textAlignVertical: "top",
+    marginBottom: 16,
+  },
+  modalButtons: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 12,
+  },
+  modalCancelButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    backgroundColor: "#f5f5f5",
+  },
+  modalCancelText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#666",
+  },
+  modalSendButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    backgroundColor: "#00BFFF",
+    gap: 8,
+  },
+  modalSendDisabled: {
+    backgroundColor: "#ccc",
+  },
+  modalSendText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#fff",
   },
 });
