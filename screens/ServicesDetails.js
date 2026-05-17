@@ -6,9 +6,10 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Modal,
   RefreshControl,
   ScrollView,
-  StyleSheet,
+  StyleSheet, // ← ADD THIS
   Text,
   TextInput,
   TouchableOpacity,

@@ -49,7 +49,7 @@ export default function ProductDetails({ navigation, route }) {
     "https://images.unsplash.com/photo-1576013551627-0cc20b96c2a7?w=800",
   ];
 
-  // ========== FIXED: checkUser FUNCTION ==========
+  // ========== CHECK USER FUNCTION ==========
   const checkUser = async () => {
     try {
       const { data: { user: currentUser } } = await supabase.auth.getUser();
@@ -121,58 +121,6 @@ export default function ProductDetails({ navigation, route }) {
     }
   };
 
-  const loadReviews = async () => {
-    try {
-      setIsLoadingReviews(true);
-      
-      const { data: reviewsData, error: reviewsError } = await supabase
-        .from("reviews")
-        .select("*")
-        .eq("product_id", product.id)
-        .neq("status", "deleted")
-        .order("created_at", { ascending: false });
-
-      if (reviewsError) {
-        console.error("Error loading reviews:", reviewsError);
-        setReviews([]);
-        return;
-      }
-
-      if (reviewsData && reviewsData.length > 0) {
-        const transformedReviews = reviewsData.map(review => {
-          const userName = review.user_name || 
-                          (review.user_email ? review.user_email.split('@')[0] : "Anonymous");
-          
-          return {
-            id: review.id,
-            product_id: review.product_id,
-            user_id: review.user_id,
-            rating: review.rating,
-            comment: review.comment,
-            user_name: userName,
-            created_at: review.created_at,
-            updated_at: review.updated_at,
-            helpful_count: review.helpful_count || 0,
-            is_verified_purchase: review.is_verified_purchase || false,
-            is_local: false
-          };
-        });
-        
-        setReviews(transformedReviews);
-        await fetchRepliesForReviews(transformedReviews);
-        await fetchConversationsForReviews(transformedReviews);
-      } else {
-        setReviews([]);
-      }
-      
-    } catch (error) {
-      console.error("Error in loadReviews:", error);
-      setReviews([]);
-    } finally {
-      setIsLoadingReviews(false);
-    }
-  };
-
   // Submit user reply to admin
   const submitUserReply = async () => {
     if (!user) {
@@ -229,6 +177,182 @@ export default function ProductDetails({ navigation, route }) {
     } finally {
       setIsSendingReply(false);
     }
+  };
+
+  const loadReviews = async () => {
+    try {
+      setIsLoadingReviews(true);
+      
+      const { data: reviewsData, error: reviewsError } = await supabase
+        .from("reviews")
+        .select("*")
+        .eq("product_id", product.id)
+        .neq("status", "deleted")
+        .order("created_at", { ascending: false });
+
+      if (reviewsError) {
+        console.error("Error loading reviews:", reviewsError);
+        setReviews([]);
+        return;
+      }
+
+      if (reviewsData && reviewsData.length > 0) {
+        const transformedReviews = reviewsData.map(review => {
+          const userName = review.user_name || 
+                          (review.user_email ? review.user_email.split('@')[0] : "Anonymous");
+          
+          return {
+            id: review.id,
+            product_id: review.product_id,
+            user_id: review.user_id,
+            rating: review.rating,
+            comment: review.comment,
+            user_name: userName,
+            created_at: review.created_at,
+            updated_at: review.updated_at,
+            helpful_count: review.helpful_count || 0,
+            is_verified_purchase: review.is_verified_purchase || false,
+            is_local: false
+          };
+        });
+        
+        setReviews(transformedReviews);
+        await fetchRepliesForReviews(transformedReviews);
+        await fetchConversationsForReviews(transformedReviews);
+      } else {
+        setReviews([]);
+      }
+      
+    } catch (error) {
+      console.error("Error in loadReviews:", error);
+      setReviews([]);
+    } finally {
+      setIsLoadingReviews(false);
+    }
+  };
+
+  const toggleConversation = (reviewId) => {
+    setExpandedConversations(prev => ({
+      ...prev,
+      [reviewId]: !prev[reviewId]
+    }));
+  };
+
+  // Render conversation thread
+  const renderConversationThread = (reviewId, adminReply) => {
+    const convs = conversations[reviewId] || [];
+    const isExpanded = expandedConversations[reviewId];
+    
+    if (convs.length === 0 && !adminReply) return null;
+    
+    return (
+      <View style={styles.conversationThread}>
+        <TouchableOpacity 
+          style={styles.conversationHeader}
+          onPress={() => toggleConversation(reviewId)}
+        >
+          <Ionicons 
+            name={isExpanded ? "chevron-down" : "chevron-forward"} 
+            size={16} 
+            color="#00BFFF" 
+          />
+          <Text style={styles.conversationHeaderText}>
+            {convs.length + (adminReply ? 1 : 0)} {convs.length + (adminReply ? 1 : 0) === 1 ? 'reply' : 'replies'}
+          </Text>
+        </TouchableOpacity>
+        
+        {isExpanded && (
+          <View style={styles.conversationMessages}>
+            {/* Admin Reply */}
+            {adminReply && (
+              <View style={[styles.messageBubble, styles.adminMessage]}>
+                <View style={styles.messageHeader}>
+                  <Ionicons name="shield-checkmark" size={12} color="#00BFFF" />
+                  <Text style={styles.adminNameText}>Admin</Text>
+                  <Text style={styles.messageDate}>{formatDate(adminReply.created_at)}</Text>
+                </View>
+                <Text style={styles.messageText}>{adminReply.reply_text}</Text>
+                
+                {/* User can reply to admin's reply */}
+                <TouchableOpacity 
+                  style={styles.replyToMessageButton}
+                  onPress={() => {
+                    if (!user) {
+                      Alert.alert("Login Required", "Please login to reply", [
+                        { text: "Login", onPress: () => navigation.navigate("Login") },
+                        { text: "Cancel", style: "cancel" },
+                      ]);
+                      return;
+                    }
+                    setSelectedConversation({
+                      reviewId: reviewId,
+                      parentId: null,
+                      replyingTo: "Admin"
+                    });
+                    setShowReplyModal(true);
+                  }}
+                >
+                  <Ionicons name="chatbubble-outline" size={12} color="#00BFFF" />
+                  <Text style={styles.replyToMessageText}>Reply</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+            
+            {/* User and Admin conversation messages */}
+            {convs.map((msg) => (
+              <View 
+                key={msg.id} 
+                style={[
+                  styles.messageBubble,
+                  msg.is_admin ? styles.adminMessage : styles.userMessage
+                ]}
+              >
+                <View style={styles.messageHeader}>
+                  <Ionicons 
+                    name={msg.is_admin ? "shield-checkmark" : "person-circle"} 
+                    size={12} 
+                    color={msg.is_admin ? "#00BFFF" : "#4CAF50"} 
+                  />
+                  <Text style={[
+                    styles.messageUserName,
+                    msg.is_admin && styles.adminNameText
+                  ]}>
+                    {msg.is_admin ? "Admin" : msg.user_name}
+                  </Text>
+                  <Text style={styles.messageDate}>{formatDate(msg.created_at)}</Text>
+                </View>
+                <Text style={styles.messageText}>{msg.message}</Text>
+                
+                {/* Reply button for user messages - allows further conversation */}
+                {!msg.is_admin && (
+                  <TouchableOpacity 
+                    style={styles.replyToMessageButton}
+                    onPress={() => {
+                      if (!user) {
+                        Alert.alert("Login Required", "Please login to reply", [
+                          { text: "Login", onPress: () => navigation.navigate("Login") },
+                          { text: "Cancel", style: "cancel" },
+                        ]);
+                        return;
+                      }
+                      setSelectedConversation({
+                        reviewId: reviewId,
+                        parentId: msg.id,
+                        replyingTo: msg.user_name
+                      });
+                      setShowReplyModal(true);
+                    }}
+                  >
+                    <Ionicons name="chatbubble-outline" size={12} color="#00BFFF" />
+                    <Text style={styles.replyToMessageText}>Reply</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            ))}
+          </View>
+        )}
+      </View>
+    );
   };
 
   const submitReview = async () => {
@@ -534,114 +658,6 @@ export default function ProductDetails({ navigation, route }) {
   
   const decrementQuantity = () => setQuantity((prev) => Math.max(1, prev - 1));
 
-  const toggleConversation = (reviewId) => {
-    setExpandedConversations(prev => ({
-      ...prev,
-      [reviewId]: !prev[reviewId]
-    }));
-  };
-
-  // Render conversation thread
-  const renderConversationThread = (reviewId, adminReply) => {
-    const convs = conversations[reviewId] || [];
-    const isExpanded = expandedConversations[reviewId];
-    
-    if (convs.length === 0 && !adminReply) return null;
-    
-    return (
-      <View style={styles.conversationThread}>
-        <TouchableOpacity 
-          style={styles.conversationHeader}
-          onPress={() => toggleConversation(reviewId)}
-        >
-          <Ionicons 
-            name={isExpanded ? "chevron-down" : "chevron-forward"} 
-            size={16} 
-            color="#00BFFF" 
-          />
-          <Text style={styles.conversationHeaderText}>
-            {convs.length + (adminReply ? 1 : 0)} {convs.length + (adminReply ? 1 : 0) === 1 ? 'reply' : 'replies'}
-          </Text>
-        </TouchableOpacity>
-        
-        {isExpanded && (
-          <View style={styles.conversationMessages}>
-            {/* Admin Reply */}
-            {adminReply && (
-              <View style={[styles.messageBubble, styles.adminMessage]}>
-                <View style={styles.messageHeader}>
-                  <Ionicons name="shield-checkmark" size={12} color="#00BFFF" />
-                  <Text style={styles.adminNameText}>Admin</Text>
-                  <Text style={styles.messageDate}>{formatDate(adminReply.created_at)}</Text>
-                </View>
-                <Text style={styles.messageText}>{adminReply.reply_text}</Text>
-                
-                <TouchableOpacity 
-                  style={styles.replyToMessageButton}
-                  onPress={() => {
-                    setSelectedConversation({
-                      reviewId: reviewId,
-                      parentId: null,
-                      replyingTo: "Admin"
-                    });
-                    setShowReplyModal(true);
-                  }}
-                >
-                  <Ionicons name="chatbubble-outline" size={12} color="#00BFFF" />
-                  <Text style={styles.replyToMessageText}>Reply</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-            
-            {/* User and Admin conversation messages */}
-            {convs.map((msg) => (
-              <View 
-                key={msg.id} 
-                style={[
-                  styles.messageBubble,
-                  msg.is_admin ? styles.adminMessage : styles.userMessage
-                ]}
-              >
-                <View style={styles.messageHeader}>
-                  <Ionicons 
-                    name={msg.is_admin ? "shield-checkmark" : "person-circle"} 
-                    size={12} 
-                    color={msg.is_admin ? "#00BFFF" : "#4CAF50"} 
-                  />
-                  <Text style={[
-                    styles.messageUserName,
-                    msg.is_admin && styles.adminNameText
-                  ]}>
-                    {msg.is_admin ? "Admin" : msg.user_name}
-                  </Text>
-                  <Text style={styles.messageDate}>{formatDate(msg.created_at)}</Text>
-                </View>
-                <Text style={styles.messageText}>{msg.message}</Text>
-                
-                {!msg.is_admin && (
-                  <TouchableOpacity 
-                    style={styles.replyToMessageButton}
-                    onPress={() => {
-                      setSelectedConversation({
-                        reviewId: reviewId,
-                        parentId: msg.id,
-                        replyingTo: msg.user_name
-                      });
-                      setShowReplyModal(true);
-                    }}
-                  >
-                    <Ionicons name="chatbubble-outline" size={12} color="#00BFFF" />
-                    <Text style={styles.replyToMessageText}>Reply</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-            ))}
-          </View>
-        )}
-      </View>
-    );
-  };
-
   // Updated renderReviewItem with conversation thread
   const renderReviewItem = (review) => {
     const adminReply = replies[review.id];
@@ -676,43 +692,59 @@ export default function ProductDetails({ navigation, route }) {
         
         <Text style={styles.reviewComment}>{review.comment}</Text>
         
-        {/* Conversation Thread (Admin Reply + User Replies) */}
+        {/* Conversation Thread (Admin Reply + User Replies) - Only shows if admin has replied */}
         {hasConversation && renderConversationThread(review.id, adminReply)}
         
-        {/* Reply button for original review */}
-        <View style={styles.reviewActions}>
-          <TouchableOpacity 
-            style={styles.replyButton}
-            onPress={() => {
-              if (!user) {
-                Alert.alert("Login Required", "Please login to reply", [
-                  { text: "Login", onPress: () => navigation.navigate("Login") },
-                  { text: "Cancel", style: "cancel" },
-                ]);
-                return;
-              }
-              setSelectedConversation({
-                reviewId: review.id,
-                parentId: null,
-                replyingTo: review.user_name
-              });
-              setShowReplyModal(true);
-            }}
-          >
-            <Ionicons name="chatbubble-outline" size={14} color="#00BFFF" />
-            <Text style={styles.replyButtonText}>Reply to Review</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity 
-            style={styles.helpfulButton}
-            onPress={() => markHelpful(review.id)}
-          >
-            <Ionicons name="thumbs-up-outline" size={16} color="#666" />
-            <Text style={styles.helpfulButtonText}>
-              Helpful ({review.helpful_count || 0})
-            </Text>
-          </TouchableOpacity>
-        </View>
+        {/* Reply button for original review - Only shows if admin has replied */}
+        {adminReply && (
+          <View style={styles.reviewActions}>
+            <TouchableOpacity 
+              style={styles.replyButton}
+              onPress={() => {
+                if (!user) {
+                  Alert.alert("Login Required", "Please login to reply", [
+                    { text: "Login", onPress: () => navigation.navigate("Login") },
+                    { text: "Cancel", style: "cancel" },
+                  ]);
+                  return;
+                }
+                setSelectedConversation({
+                  reviewId: review.id,
+                  parentId: null,
+                  replyingTo: review.user_name
+                });
+                setShowReplyModal(true);
+              }}
+            >
+              <Ionicons name="chatbubble-outline" size={14} color="#00BFFF" />
+              <Text style={styles.replyButtonText}>Reply to Review</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity 
+              style={styles.helpfulButton}
+              onPress={() => markHelpful(review.id)}
+            >
+              <Ionicons name="thumbs-up-outline" size={16} color="#666" />
+              <Text style={styles.helpfulButtonText}>
+                Helpful ({review.helpful_count || 0})
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        
+        {!adminReply && (
+          <View style={styles.reviewActions}>
+            <TouchableOpacity 
+              style={styles.helpfulButton}
+              onPress={() => markHelpful(review.id)}
+            >
+              <Ionicons name="thumbs-up-outline" size={16} color="#666" />
+              <Text style={styles.helpfulButtonText}>
+                Helpful ({review.helpful_count || 0})
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
     );
   };
@@ -817,8 +849,7 @@ export default function ProductDetails({ navigation, route }) {
       useNativeDriver: true,
     }).start();
 
-    // ========== REAL-TIME SUBSCRIPTIONS ==========
-    
+    // Real-time subscriptions
     const reviewsSubscription = supabase
       .channel('reviews-changes')
       .on(
@@ -875,7 +906,6 @@ export default function ProductDetails({ navigation, route }) {
     };
   }, [product.id]);
 
-  // ========== RENDER ==========
   return (
     <View style={styles.container}>
       <View style={styles.header}>
